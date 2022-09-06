@@ -1,196 +1,157 @@
-import numpy as np
-import matplotlib.pylab as plt
 import pandas as pd
+import numpy as np
 
 
-def sigmoid(Z):
-    A = 1 / (1 + np.exp(-Z))
-    cache = Z
-    return A, cache
+class MLP:
+    def __init__(self, X=None, Y=None, X_val=None, Y_val=None, L=1, N_l=128):
+        self.batch_size = None
+        self.lr = None
+        if X is not None:
+            self.X = np.concatenate((X, np.ones((X.shape[0], 1))), axis=1)
+        if Y is not None:
+            self.Y = np.squeeze(np.eye(2)[Y.astype(np.int64).reshape(-1)])
+        if X_val is not None:
+            self.X_val = np.concatenate((X_val, np.ones((X_val.shape[0], 1))), axis=1)
+        if Y_val is not None:
+            self.Y_val = np.squeeze(np.eye(2)[Y_val.astype(np.int64).reshape(-1)])
+        self.L = L
+        self.N_l = N_l
+        if X is not None:
+            self.n_samples = self.X.shape[0]
+        if Y is not None:
+            self.Y_shape = self.Y.shape[1]
+        if X is not None:
+            self.layer_sizes = np.array([self.X.shape[1]] + [N_l] * L + [self.Y.shape[1]])
+        self.weights = None
+        self.__h = None
+        self.__out = None
+        if X is not None:
+            self.__init_weights()
+        self.train_loss = []
+        self.train_acc = []
+        self.val_loss = []
+        self.val_acc = []
+        self.metrics = [self.train_loss, self.train_acc, self.val_loss, self.val_acc]
 
+    def __sigmoid(self, x):
+        return 1. / (1. + np.exp(-x))
 
-def relu(Z):
-    A = np.maximum(0, Z)
-    assert (A.shape == Z.shape)
-    cache = Z
-    return A, cache
+    def __softmax(self, x):
+        exponent = np.exp(x)
+        return exponent / exponent.sum(axis=1, keepdims=True)
 
+    def __loss(self, y_pred, y):
+        return ((-np.log(y_pred)) * y).sum(axis=1).mean()
 
-def relu_backward(dA, cache):
-    Z = cache
-    dZ = np.array(dA, copy=True)
-    dZ[Z <= 0] = 0
-    assert (dZ.shape == Z.shape)
-    return dZ
+    def __accuracy(self, y_pred, y):
+        return np.all(y_pred == y, axis=1).mean()
 
+    def __sigmoid_prime(self, h):
+        return h * (1 - h)
 
-def sigmoid_backward(dA, cache):
-    Z = cache
-    s = 1 / (1 + np.exp(-Z))
-    dZ = dA * s * (1 - s)
-    assert (dZ.shape == Z.shape)
-    return dZ
+    def __to_categorical(self, x):
+        categorical = np.zeros((x.shape[0], self.Y_shape))
+        categorical[np.arange(x.shape[0]), x.argmax(axis=1)] = 1
+        return categorical
 
+    def __init_weights(self):
+        self.weights = []
+        for i in range(self.layer_sizes.shape[0] - 1):
+            self.weights.append(np.random.uniform(-1, 1, size=[self.layer_sizes[i], self.layer_sizes[i + 1]]))
+        self.weights = np.asarray(self.weights, dtype=object)
 
-def initialize_parameters(n_x, n_h, n_y):
-    np.random.seed(1)
-    W1 = np.random.randn(n_h, n_x) * 0.01
-    b1 = np.zeros((n_h, 1))
-    W2 = np.random.randn(n_y, n_h) * 0.01
-    b2 = np.zeros((n_y, 1))
+    def __init_layers(self, batch_size):
+        self.__h = [np.empty((batch_size, layer)) for layer in self.layer_sizes]
 
-    assert (W1.shape == (n_h, n_x))
-    assert (b1.shape == (n_h, 1))
-    assert (W2.shape == (n_y, n_h))
-    assert (b2.shape == (n_y, 1))
+    def __feed_forward(self, batch):
+        h_l = batch
+        self.__h[0] = h_l
+        for i, weights in enumerate(self.weights):
+            h_l = self.__sigmoid(h_l.dot(weights))
+            self.__h[i + 1] = h_l
+        self.__out = self.__softmax(self.__h[-1])
 
-    parameters = {"W1": W1,
-                  "b1": b1,
-                  "W2": W2,
-                  "b2": b2}
-    return parameters
+    def __back_prop(self, batch_y):
+        delta_t = (self.__out - batch_y) * self.__sigmoid_prime(self.__h[-1])
+        for i in range(1, len(self.weights) + 1):
+            self.weights[-i] -= self.lr * (self.__h[-i - 1].T.dot(delta_t)) / self.batch_size
+            delta_t = self.__sigmoid_prime(self.__h[-i - 1]) * (delta_t.dot(self.weights[-i].T))
 
+    def predict(self, X):
+        X = np.concatenate((X, np.ones((X.shape[0], 1))), axis=1)
+        self.__init_layers(X.shape[0])
+        self.__feed_forward(X)
+        return self.__to_categorical(self.__out)
 
-def linear_forward(A, W, b):
-    Z = W.dot(A) + b
-    # print("Shapes: ", Z.shape, W.shape[0], A.shape[1])
-    assert (Z.shape == (W.shape[0], A.shape[1]))
-    cache = (A, W, b)
+    def evaluate(self, X, Y):
+        prediction = self.predict(X)
+        return self.__accuracy(prediction, Y)
 
-    return Z, cache
+    def save_model(self, file='model.pkl'):
+        params = {
+            'batch_size': self.batch_size,
+            'lr': self.lr,
+            'L': self.L,
+            'N_l': self.N_l,
+            'n_samples': self.n_samples,
+            'layer_sizes': self.layer_sizes,
+            '__h': self.__h,
+            'weights': self.weights,
+            '__out': self.__out,
+            'Y_shape': self.Y_shape
+        }
+        pd.to_pickle(obj=params, filepath_or_buffer=file)
 
+    def load_model(self, file='model.pkl'):
+        params = pd.read_pickle(filepath_or_buffer=file)
+        self.batch_size = params['batch_size']
+        self.lr = params['lr']
+        self.L = params['L']
+        self.N_l = params['N_l']
+        self.n_samples = params['n_samples']
+        self.layer_sizes = params['layer_sizes']
+        self.__h = params['__h']
+        self.weights = params['weights']
+        self.__out = params['__out']
+        self.Y_shape = params['Y_shape']
 
-def linear_activation_forward(A_prev, W, b, activation):
-    if activation == "sigmoid":
-        Z, linear_cache = linear_forward(A_prev, W, b)
-        A, activation_cache = sigmoid(Z)
+    def train(self, batch_size=8, epochs=25, lr=1.0, early_stopping=2):
+        self.lr = lr
+        self.batch_size = batch_size
+        flag_stop = 0
+        for epoch in range(epochs):
+            self.__init_layers(self.batch_size)
+            shuffle = np.random.permutation(self.n_samples)
+            train_loss = 0
+            train_acc = 0
+            X_batches = np.array_split(self.X[shuffle], self.n_samples / self.batch_size)
+            Y_batches = np.array_split(self.Y[shuffle], self.n_samples / self.batch_size)
+            for batch_x, batch_y in zip(X_batches, Y_batches):
+                self.__feed_forward(batch_x)
+                train_loss += self.__loss(self.__out, batch_y)
+                train_acc += self.__accuracy(self.__to_categorical(self.__out), batch_y)
+                self.__back_prop(batch_y)
 
-    elif activation == "relu":
-        A_prev = A_prev.T
-        Z, linear_cache = linear_forward(A_prev, W, b)
-        A, activation_cache = relu(Z)
+            train_loss = (train_loss / len(X_batches))
+            train_acc = (train_acc / len(X_batches))
+            self.train_loss.append(train_loss)
+            self.train_acc.append(train_acc)
 
-    assert (A.shape == (W.shape[0], A_prev.shape[1]))
-    cache = (linear_cache, activation_cache)
+            self.__init_layers(self.X_val.shape[0])
+            self.__feed_forward(self.X_val)
+            val_loss = self.__loss(self.__out, self.Y_val)
+            val_acc = self.__accuracy(self.__to_categorical(self.__out), self.Y_val)
+            self.val_loss.append(val_loss)
+            self.val_acc.append(val_acc)
 
-    return A, cache
+            print(
+                f"epoch {epoch + 1}/{epochs} - loss: {round(train_loss, 4)} - acc: {round(train_acc, 4)} "
+                f"- val_loss: {round(val_loss, 4)} - val_acc: {round(val_acc, 4)}")
 
+            if early_stopping:
 
-def compute_cost(AL, Y):
-    m = Y.shape[0]
-    cost = (1. / m) * (-np.dot(Y, np.log(AL).T) - np.dot(1 - Y, np.log(1 - AL).T))
-
-    cost = np.squeeze(cost)
-    assert (cost.shape == ())
-
-    return cost
-
-
-def linear_backward(dZ, cache):
-    A_prev, W, b = cache
-    m = A_prev.shape[1]
-
-    dW = 1. / m * np.dot(dZ, A_prev.T)
-    db = 1. / m * np.sum(dZ, axis=1, keepdims=True)
-    dA_prev = np.dot(W.T, dZ)
-
-    assert (dA_prev.shape == A_prev.shape)
-    assert (dW.shape == W.shape)
-    assert (db.shape == b.shape)
-
-    return dA_prev, dW, db
-
-
-def linear_activation_backward(dA, cache, activation):
-    linear_cache, activation_cache = cache
-
-    if activation == "relu":
-        dZ = relu_backward(dA, activation_cache)
-        dA_prev, dW, db = linear_backward(dZ, linear_cache)
-
-    elif activation == "sigmoid":
-        dZ = sigmoid_backward(dA, activation_cache)
-        dA_prev, dW, db = linear_backward(dZ, linear_cache)
-
-    return dA_prev, dW, db
-
-
-def update_parameters(parameters, grads, learning_rate):
-    L = len(parameters) // 2
-
-    for l in range(L):
-        parameters["W" + str(l + 1)] = parameters["W" + str(l + 1)] - learning_rate * grads["dW" + str(l + 1)]
-        parameters["b" + str(l + 1)] = parameters["b" + str(l + 1)] - learning_rate * grads["db" + str(l + 1)]
-
-    return parameters
-
-
-def two_layer_model(X, Y, layers_dims, learning_rate=0.0075, num_iterations=3000, print_cost=False):
-    np.random.seed(1)
-    grads = {}
-    costs = []
-    # m = X.shape[1]
-    m = X.shape[0]
-    (n_x, n_h, n_y) = layers_dims
-
-    parameters = initialize_parameters(n_x, n_h, n_y)
-
-    W1 = parameters["W1"]
-    b1 = parameters["b1"]
-    W2 = parameters["W2"]
-    b2 = parameters["b2"]
-
-    for i in range(0, num_iterations):
-
-        A1, cache1 = linear_activation_forward(X, W1, b1, 'relu')
-        A2, cache2 = linear_activation_forward(A1, W2, b2, 'sigmoid')
-
-        cost = compute_cost(A2, Y)
-
-        dA2 = - (np.divide(Y, A2) - np.divide(1 - Y, 1 - A2))
-
-        dA1, dW2, db2 = linear_activation_backward(dA2, cache2, 'sigmoid')
-        dA0, dW1, db1 = linear_activation_backward(dA1, cache1, 'relu')
-
-        grads['dW1'] = dW1
-        grads['db1'] = db1
-        grads['dW2'] = dW2
-        grads['db2'] = db2
-
-        parameters = update_parameters(parameters, grads, learning_rate)
-
-        W1 = parameters["W1"]
-        b1 = parameters["b1"]
-        W2 = parameters["W2"]
-        b2 = parameters["b2"]
-
-        if print_cost and i % 100 == 0:
-            print("Cost after iteration {}: {}".format(i, np.squeeze(cost)))
-        if print_cost and i % 100 == 0:
-            costs.append(cost)
-
-    plt.plot(np.squeeze(costs))
-    plt.ylabel('cost')
-    plt.xlabel('iterations (per hundreds)')
-    plt.title("Learning rate =" + str(learning_rate))
-    plt.show()
-
-    return parameters
-
-
-from sklearn.model_selection import train_test_split
-
-if __name__ == '__main__':
-    df = pd.read_csv('data.csv')
-    x_data = df.iloc[:, 2:].values
-
-    y_data = df.iloc[:, 1].replace({'M': 1, 'B': 0}).values
-    # print(y_data)
-    train_x, test_x, train_y, test_y = train_test_split(x_data, y_data, test_size=0.3)
-    n_x = train_x.shape[1]
-    n_h = 7
-    n_y = 1
-    layers_dims = (n_x, n_h, n_y)
-    print(train_x.shape, train_y.shape)
-
-    parameters = two_layer_model(train_x, train_y, layers_dims=(n_x, n_h, n_y), num_iterations=2500, print_cost=True)
+                if len(self.val_loss) > 2 and val_loss > self.val_loss[-2]:
+                    flag_stop += 1
+                if flag_stop > early_stopping:
+                    print('Early stopping activated')
+                    break
